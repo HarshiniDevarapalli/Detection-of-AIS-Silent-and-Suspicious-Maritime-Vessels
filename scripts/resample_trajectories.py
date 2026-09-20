@@ -1,30 +1,61 @@
+import sys
+import os
 import pandas as pd
 
-INPUT_FILE = "data/processed/gfw_trawlers_clean.csv"
-OUTPUT_FILE = "data/processed/gfw_trawlers_10min.parquet"
 
 # --------------------------------------------------
-# 1. Load data
+# 1. Get dataset name
 # --------------------------------------------------
+
+if len(sys.argv) != 2:
+    print("Usage: python scripts/resample_trajectories.py <dataset_name>")
+    print("Example: python scripts/resample_trajectories.py purse_seines")
+    sys.exit(1)
+
+DATASET = sys.argv[1]
+
+INPUT_FILE = f"data/processed/{DATASET}_clean.csv"
+OUTPUT_FILE = f"data/processed/gfw_{DATASET}_10min.parquet"
+
+
+# --------------------------------------------------
+# 2. Check input file
+# --------------------------------------------------
+
+if not os.path.exists(INPUT_FILE):
+    print(f"Error: File not found: {INPUT_FILE}")
+    sys.exit(1)
+
+
+# --------------------------------------------------
+# 3. Load data
+# --------------------------------------------------
+
+print(f"Loading: {INPUT_FILE}")
 
 df = pd.read_csv(INPUT_FILE)
 
-df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+df["timestamp"] = pd.to_datetime(
+    df["timestamp"],
+    utc=True
+)
 
 df = df.sort_values(
     ["mmsi", "timestamp"]
 ).reset_index(drop=True)
 
+
 # --------------------------------------------------
-# 2. Calculate time gaps
+# 4. Calculate time gaps
 # --------------------------------------------------
 
 df["time_diff"] = (
     df.groupby("mmsi")["timestamp"].diff()
 )
 
+
 # --------------------------------------------------
-# 3. Create trajectory segments
+# 5. Create trajectory segments
 # --------------------------------------------------
 
 MAX_GAP = pd.Timedelta(minutes=30)
@@ -39,8 +70,9 @@ df["segment_id"] = (
       .cumsum()
 )
 
+
 # --------------------------------------------------
-# 4. Keep only sufficiently long segments
+# 6. Keep sufficiently long segments
 # --------------------------------------------------
 
 segment_sizes = (
@@ -53,18 +85,29 @@ usable_segments = segment_sizes[
     segment_sizes["observations"] >= 100
 ]
 
-print("Total usable segments:", len(usable_segments))
+print("\n========== SEGMENTS ==========")
+
+print(
+    "Total usable segments:",
+    len(usable_segments)
+)
 
 df = df.merge(
-    usable_segments[["mmsi", "segment_id"]],
+    usable_segments[
+        ["mmsi", "segment_id"]
+    ],
     on=["mmsi", "segment_id"],
     how="inner"
 )
 
-print("Observations before resampling:", len(df))
+print(
+    "Observations before resampling:",
+    len(df)
+)
+
 
 # --------------------------------------------------
-# 5. Resample each trajectory to 10-minute intervals
+# 7. Resample trajectories
 # --------------------------------------------------
 
 features = [
@@ -85,17 +128,21 @@ for (mmsi, segment_id), group in df.groupby(
     group = group.set_index("timestamp")
 
     # Resample to 10-minute intervals
-    resampled = group[features].resample("10min").mean()
+    resampled = (
+        group[features]
+        .resample("10min")
+        .mean()
+    )
 
-    # Interpolate only small gaps
+    # Interpolate only one missing timestep
     resampled = resampled.interpolate(
         method="time",
         limit=1
     )
 
-    # Remove rows where required features are still missing
+    # Remove remaining missing values
     resampled = resampled.dropna(
-        subset=["lat", "lon", "speed", "course"]
+        subset=features
     )
 
     # Restore identifiers
@@ -106,14 +153,20 @@ for (mmsi, segment_id), group in df.groupby(
         resampled.reset_index()
     )
 
+
 # --------------------------------------------------
-# 6. Combine everything
+# 8. Combine all segments
 # --------------------------------------------------
 
 result = pd.concat(
     resampled_segments,
     ignore_index=True
 )
+
+
+# --------------------------------------------------
+# 9. Select final columns
+# --------------------------------------------------
 
 result = result[
     [
@@ -127,8 +180,9 @@ result = result[
     ]
 ]
 
+
 # --------------------------------------------------
-# 7. Save as Parquet
+# 10. Save as Parquet
 # --------------------------------------------------
 
 result.to_parquet(
@@ -136,13 +190,19 @@ result.to_parquet(
     index=False
 )
 
+
 # --------------------------------------------------
-# 8. Print summary
+# 11. Print summary
 # --------------------------------------------------
 
 print("\n========== RESAMPLED DATA ==========")
 
-print("Rows:", len(result))
+print("Dataset:", DATASET)
+
+print(
+    "Rows:",
+    len(result)
+)
 
 print(
     "Vessels:",
@@ -151,12 +211,13 @@ print(
 
 print(
     "Segments:",
-    result[["mmsi", "segment_id"]]
-    .drop_duplicates()
-    .shape[0]
+    result[
+        ["mmsi", "segment_id"]
+    ].drop_duplicates().shape[0]
 )
 
 print("\nFirst 10 rows:")
+
 print(result.head(10))
 
 print(
